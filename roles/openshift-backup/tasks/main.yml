@@ -1,0 +1,146 @@
+---
+# tasks file for openshift-backup
+
+- debug: msg="{{ config_file }}"
+
+- stat: path="{{ config_file }}"
+  register: st
+
+- include_vars: "{{ config_file }}"
+  when: st.stat.exists and st.stat.isreg
+  no_log: True
+
+- set_fact:
+    osi_username: "clouds.devstack.auth.username"
+    osi_password: "clouds.devstack.auth.password"
+  when: st.stat.exists and st.stat.isreg
+
+- stat:
+    path: "/etc/origin/node"
+  register: origin_node
+
+- stat:
+    path: "/etc/origin/master"
+  register: origin_master
+
+- debug: var=origin_master
+
+- name: Set ETCD_DATA_DIR
+  set_fact:
+    ETCD_DATA_DIR: "/var/lib/etcd"
+
+- name: Create temporary backup directory
+  file:
+    path: /tmp/openshift-backup
+    state: directory
+    mode: 0755
+  register: backupdir
+
+- name: Create Openshift projects directory
+  file:
+    path: "{{ backupdir.path }}/projects"
+    state: directory
+    mode: 0755
+  register: backupdir_projects
+  when: origin_master.stat.exists
+
+- name: Create etcd backup directory
+  file:
+    path: "{{ backupdir.path }}/etcd"
+    state: directory
+    mode: 0755
+  register: backupdir_etcd
+  when: origin_master.stat.exists
+
+- name: Execute Openshift resource backups for all projects
+  shell: |
+    cd {{ backupdir_projects.path }}
+    oc login -u system:admin -n default
+    oc get projects | grep -i Active | awk '{system ("oc export all -n " $1 " -o yaml > oc_bu_prj_" $1 ".yaml")}'
+    oc get projects | grep -i Active | awk '{system ("oc get rolebindings -n " $1 " -o yaml --export=true > oc_bu_rolebindings_" $1 ".yaml")}'
+    oc get projects | grep -i Active | awk '{system ("oc get serviceaccount -n " $1 " -o yaml --export=true > oc_bu_serviceaccount_" $1 ".yaml")}'
+    oc get projects | grep -i Active | awk '{system ("oc get secret -n " $1 " -o yaml --export=true > oc_bu_secret_" $1 ".yaml")}'
+    oc get projects | grep -i Active | awk '{system ("oc get pvc -n " $1 " -o yaml --export=true > oc_bu_pvc_" $1 ".yaml")}'
+    #tar -czf {{ backupdir.path }}/oc_bu_{{ hostvars[inventory_hostname]['ocp_env'] }}.tar.gz {{ backupdir_projects.path }}
+  when: "'ocp-masters' in group_names"
+
+- name: Backup etcd
+  shell: |
+    cd {{ backupdir_etcd.path }}
+    etcdctl backup --data-dir {{ ETCD_DATA_DIR }} --backup-dir {{ backupdir_etcd.path }}
+    cp {{ ETCD_DATA_DIR }}/member/snap/db {{ backupdir_etcd.path }}/member/snap/db
+  when: origin_master.stat.exists
+
+- name: Backup Registry Certificates
+  archive:
+    path: "/etc/docker/certs.d"
+    dest: "{{ backupdir.path }}/docker-registry-certs-{{ inventory_hostname }}.tar.gz"
+
+- name: Backup origin node folder
+  archive:
+    path: "/etc/origin/node"
+    dest: "{{ backupdir.path }}/origin-node-{{ inventory_hostname }}.tar.gz"
+
+- name: Backup origin node folder
+  archive:
+    path: "/etc/origin/master"
+    dest: "{{ backupdir.path }}/origin-master-{{ inventory_hostname }}.tar.gz"
+  when: origin_master.stat.exists
+
+- archive:
+    path: "{{ backupdir.path }}"
+    dest: "/tmp/oc_bu_complete_{{ hostvars[inventory_hostname]['ocp_env'] }}_{{ inventory_hostname }}.tar.gz"
+
+- fetch:
+    src: "/tmp/oc_bu_complete_{{ hostvars[inventory_hostname]['ocp_env'] }}_{{ inventory_hostname }}.tar.gz"
+    dest: "/tmp/openshift-backup/oc_bu_complete_{{ hostvars[inventory_hostname]['ocp_env'] }}_{{ inventory_hostname }}.tar.gz"
+    flat: yes
+
+- stat:
+    path: "{{ item }}"
+  register: file_list
+  run_once: true
+  with_fileglob:
+    - "/tmp/openshift-backup/*"
+
+- name: Copy to Swift storage
+  os_object:
+    auth: "{{ item.1 }}"
+    state: present
+    name: "{{ item.0.item | basename }}_{{ ansible_date_time.weekday_number }}.tar.gz"
+    container: "ocp_config_{{ (item.0.item | basename).split('_')[3] }}"
+    filename: "{{ item.0.item }}"
+  no_log: true
+  run_once: true
+  delegate_to: localhost
+  with_nested: 
+    - "{{ file_list.results }}"
+    - "{{ prj_list }}"
+  become: no
+  register: swift
+
+#- name: Remove tar file remotely
+#  file:
+#    path: "/tmp/oc_bu_{{ hostvars[inventory_hostname]['ocp_env'] }}.tar.gz"
+#    state: absent
+#  when: swift|succeeded
+
+#- name: Remove backup files
+#  file:
+#    path: /tmp/openshift-backup
+#    state: absent
+#  when: swift|succeeded
+
+#- name: Remove tar file locally from Ansible controller
+#  file:
+#    path: "/tmp/oc_bu_{{ hostvars[inventory_hostname]['ocp_env'] }}.tar.gz"
+#    state: absent
+#  when: swift|succeeded
+#  delegate_to: localhost
+#  become: no
+
+#- name: Remove backup files
+#  file:
+#    path: /tmp/openshift-backup
+#    state: absent
+#  when: swift|succeeded

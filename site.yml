@@ -1,0 +1,45 @@
+---
+# This playbook deploys the whole application stack in this site.
+
+- name: Add Openshift Master hosts from group_vars
+  hosts: localhost
+  tasks:
+    - file:
+        path: "/tmp/openshift-backup"
+        state: directory
+        mode: 0755
+
+    - add_host:
+        name: "{{ item.host }}"
+        group: ocp-masters
+        ocp_env: "{{ item.ocp_env }}"
+      with_items: "{{ masters }}"
+
+- name: Add Openshift Cluster hosts from polling Openshift API 
+  hosts: ocp-masters
+  serial: 1
+  user: cloud-user
+  become_method: sudo
+  become: yes
+  tasks:
+    - name: Enumerate Openshift nodes
+      shell: |
+        oc login -u system:admin -n default > /dev/null 2>&1
+        oc get nodes -o name | cut -d'/' -f2
+      register: ocp_nodes    
+
+    - name: Add Openshift nodes to inventory
+      add_host:
+        name: "{{ item }}"
+        ocp_env: "{{ hostvars[inventory_hostname]['ocp_env'] }}"
+        group: ocp-nodes
+      with_items: "{{ hostvars[inventory_hostname].ocp_nodes.stdout_lines }}"
+      delegate_to: localhost
+
+- name: Apply Openshift-Backup role to all systems
+  hosts: ocp-masters:ocp-nodes
+  user: cloud-user
+  become_method: sudo
+  become: yes
+  roles:
+    - openshift-backup 

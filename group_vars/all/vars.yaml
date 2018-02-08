@@ -1,0 +1,49 @@
+#######
+# OCP Environment Configuration
+#######
+
+masters:
+  - host: master-1.cluster1.local
+    ocp_env: cluster1
+  - host: master-1.cluster2.local
+    ocp_env: cluster2
+  - host: master-1.cluster3.local
+    ocp_env: cluster3
+
+#######
+# Ansible Tower Openstack Credential Configuration
+#######
+
+config_file: "{{ lookup('env', 'OS_CLIENT_CONFIG_FILE') }}"
+
+#######
+# Openstack Environment Configuration
+#######
+
+# Auth Dictionary for OS modules:
+osi_auth: &osi_auth_ref
+  username: "{{ osi_username }}"
+  password: "{{ osi_password }}"
+  project_domain_name: "domain"
+  user_domain_name: "domain"
+ 
+# Auth Dictionary for Openstack Cloud 1:
+osi_auth_cloud1: &osi_cloud1_ref
+  auth_url: "https://cloud1.local:13000/v3"
+  <<: *osi_auth_ref
+
+# Auth Dictionary for Openstack Cloud 2:
+osi_auth_cloud2: &osi_cloud2_ref
+  auth_url: "https://cloud2.local:13000/v3"
+  <<: *osi_auth_ref
+
+#######
+# Openstack Project Configuration
+#######
+
+prj_list:
+  - project_name: "project1"
+    <<: *osi_cloud1_ref
+  - project_name: "project2"
+    <<: *osi_cloud2_ref
+
